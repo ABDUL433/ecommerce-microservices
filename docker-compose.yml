@@ -1,0 +1,37 @@
+# Local infrastructure for the whole project: one command instead of four manual containers.
+#   start:  docker compose up -d
+#   stop:   docker compose down        (add -v to also delete the database data)
+name: ecommerce
+
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    ports:
+      - "9092:9092"
+
+  inventory-db:
+    image: postgres:17-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: inventory_db
+
+  order-db:
+    image: postgres:17-alpine
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: order_db
+
+  payment-db:
+    image: postgres:17-alpine
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: payment_db
