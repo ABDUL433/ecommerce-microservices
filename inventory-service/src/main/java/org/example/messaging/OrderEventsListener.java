@@ -2,6 +2,8 @@ package org.example.messaging;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.example.exception.InsufficientStockException;
 import org.example.exception.ResourceNotFoundException;
 import org.example.service.InventoryService;
@@ -20,10 +22,14 @@ public class OrderEventsListener {
 
     private final InventoryService inventoryService;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
-    public OrderEventsListener(InventoryService inventoryService, ObjectMapper objectMapper) {
+    public OrderEventsListener(InventoryService inventoryService,
+                               ObjectMapper objectMapper,
+                               MeterRegistry meterRegistry) {
         this.inventoryService = inventoryService;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
     }
 
     @KafkaListener(topics = "order-events", groupId = "inventory-service")
@@ -45,11 +51,21 @@ public class OrderEventsListener {
         try {
             // on success this also writes a StockReserved outbox row in the same transaction
             inventoryService.reserveOrder(event.orderId(), lines);
+            count("reserved");
             log.info("Reserved stock for order {}", event.orderId());
         } catch (InsufficientStockException | ResourceNotFoundException e) {
             // business failure: nothing stays reserved. Tell the Order Service via a StockFailed event.
+            count("rejected");
             log.warn("Could not reserve stock for order {}: {}", event.orderId(), e.getMessage());
             inventoryService.recordStockFailed(event.orderId(), e.getMessage());
         }
+    }
+
+    private void count(String result) {
+        Counter.builder("inventory.reservations")
+                .description("Stock reservation attempts by result")
+                .tag("result", result)
+                .register(meterRegistry)
+                .increment();
     }
 }

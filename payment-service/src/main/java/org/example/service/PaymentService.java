@@ -2,6 +2,8 @@ package org.example.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.example.dto.PaymentResponse;
 import org.example.entity.Outbox;
 import org.example.entity.Payment;
@@ -29,15 +31,18 @@ public class PaymentService {
     private final OutboxRepository outboxRepository;
     private final PaymentGateway gateway;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
     public PaymentService(PaymentRepository paymentRepository,
                           OutboxRepository outboxRepository,
                           PaymentGateway gateway,
-                          ObjectMapper objectMapper) {
+                          ObjectMapper objectMapper,
+                          MeterRegistry meterRegistry) {
         this.paymentRepository = paymentRepository;
         this.outboxRepository = outboxRepository;
         this.gateway = gateway;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -61,6 +66,7 @@ public class PaymentService {
                 ? PaymentEvent.succeeded(orderId, amount)
                 : PaymentEvent.failed(orderId, amount, result.failureReason());
         outboxRepository.save(new Outbox(orderId, event.eventType(), toJson(event)));
+        count(result.success() ? "success" : "failed");
         log.info("Payment {} for order {}", status, orderId);
     }
 
@@ -69,6 +75,14 @@ public class PaymentService {
         return paymentRepository.findByOrderId(orderId)
                 .map(PaymentResponse::from)
                 .orElseThrow(() -> new ResourceNotFoundException("No payment for order: " + orderId));
+    }
+
+    private void count(String status) {
+        Counter.builder("payments.processed")
+                .description("Payments processed by status")
+                .tag("status", status)
+                .register(meterRegistry)
+                .increment();
     }
 
     private String toJson(Object event) {

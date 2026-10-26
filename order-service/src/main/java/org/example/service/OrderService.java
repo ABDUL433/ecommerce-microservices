@@ -2,6 +2,9 @@ package org.example.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.example.dto.CreateOrderRequest;
 import org.example.dto.OrderItemRequest;
 import org.example.dto.OrderResponse;
@@ -16,6 +19,8 @@ import org.example.repository.OutboxRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -25,13 +30,20 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
+    private final Counter ordersCreated;
 
     public OrderService(OrderRepository orderRepository,
                         OutboxRepository outboxRepository,
-                        ObjectMapper objectMapper) {
+                        ObjectMapper objectMapper,
+                        MeterRegistry meterRegistry) {
         this.orderRepository = orderRepository;
         this.outboxRepository = outboxRepository;
         this.objectMapper = objectMapper;
+        this.meterRegistry = meterRegistry;
+        this.ordersCreated = Counter.builder("orders.created")
+                .description("Orders placed")
+                .register(meterRegistry);
     }
 
     /**
@@ -47,6 +59,7 @@ public class OrderService {
         Order saved = orderRepository.save(order);
         outboxRepository.save(new Outbox(saved.getId(), OrderCreatedEvent.TYPE,
                 toJson(OrderCreatedEvent.from(saved))));
+        ordersCreated.increment();
         return OrderResponse.from(saved);
     }
 
@@ -69,7 +82,12 @@ public class OrderService {
     /** Saga success: payment succeeded. Repeating it is harmless. */
     @Transactional
     public void confirmOrder(UUID orderId) {
-        findOrder(orderId).confirm();
+        Order order = findOrder(orderId);
+        boolean wasPending = order.getStatus() == OrderStatus.PENDING;
+        order.confirm();
+        if (wasPending) {
+            recordSagaDuration(order, "confirmed");
+        }
     }
 
     /**
@@ -79,7 +97,12 @@ public class OrderService {
      */
     @Transactional
     public void cancelOrder(UUID orderId) {
-        findOrder(orderId).cancel();
+        Order order = findOrder(orderId);
+        boolean wasPending = order.getStatus() == OrderStatus.PENDING;
+        order.cancel();
+        if (wasPending) {
+            recordSagaDuration(order, "cancelled");
+        }
     }
 
     @Transactional(readOnly = true)
@@ -91,6 +114,16 @@ public class OrderService {
     public List<OrderResponse> listOrders(UUID customerId) {
         return orderRepository.findByCustomerIdOrderByCreatedAtDesc(customerId)
                 .stream().map(OrderResponse::from).toList();
+    }
+
+    /** Time from "order placed" until the saga finished, the main end-to-end latency metric. */
+    private void recordSagaDuration(Order order, String outcome) {
+        Timer.builder("orders.saga.duration")
+                .description("Time from order placed until it was confirmed or cancelled")
+                .tag("outcome", outcome)
+                .publishPercentileHistogram()
+                .register(meterRegistry)
+                .record(Duration.between(order.getCreatedAt(), Instant.now()));
     }
 
     private Order findOrder(UUID id) {
