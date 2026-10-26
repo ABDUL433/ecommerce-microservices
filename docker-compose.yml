@@ -1,6 +1,9 @@
-# Local infrastructure for the whole project: one command instead of four manual containers.
+# Local infrastructure for the whole project: one command instead of manual containers.
 #   start:  docker compose up -d
 #   stop:   docker compose down        (add -v to also delete the database data)
+#
+# Grafana:    http://localhost:3000   (dashboard opens by itself, no login needed to view)
+# Prometheus: http://localhost:9090   (targets: http://localhost:9090/targets)
 name: ecommerce
 
 services:
@@ -8,6 +11,8 @@ services:
     image: apache/kafka:3.9.1
     ports:
       - "9092:9092"
+    environment:
+         KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
 
   inventory-db:
     image: postgres:17-alpine
@@ -35,3 +40,26 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: payment_db
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ecommerce.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
