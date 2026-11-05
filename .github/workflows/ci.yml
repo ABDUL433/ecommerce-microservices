@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [inventory-service, order-service, payment-service]
+        service: [inventory-service, order-service, payment-service, api-gateway]
     defaults:
       run:
         working-directory: ${{ matrix.service }}

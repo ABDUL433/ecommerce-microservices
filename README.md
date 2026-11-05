@@ -201,3 +201,100 @@ Run the tests locally with `mvn verify` inside a service folder (Docker must be 
 - The payment gateway is a fake called inside the database transaction. A real provider would be called outside it, with an idempotency key.
 - Kafka runs as a single broker, and the benchmark ran on one laptop, so there is no horizontal-scaling result yet.
 - Planned: API gateway with JWT, Resilience4j circuit breakers, Redis caching for stock reads, and a dead-letter topic.
+
+<!-- Paste the sections below into README.md.
+     1. Replace the first diagram (under "Architecture") with the one here.
+     2. Add the "Security" section after "Order flow".
+     3. Replace the "Try it" section and the "API" table with the ones here.
+     4. In "Performance", use the new k6 command below. -->
+
+## Architecture
+
+All client traffic goes through the API gateway. Each service owns its own database and talks to the others only through Kafka events.
+
+```mermaid
+flowchart LR
+    Client([Client]) -->|"REST + Bearer token"| G[API Gateway :8080]
+    G -->|"/api/orders"| O[Order Service :8082]
+    G -->|"/api/products, /api/inventory"| I[Inventory Service :8081]
+    G -->|"/api/payments (admin)"| P[Payment Service :8083]
+    O --- ODB[(order_db)]
+    I --- IDB[(inventory_db)]
+    P --- PDB[(payment_db)]
+    O <--> K{{Kafka}}
+    I <--> K
+    P <--> K
+```
+
+## Security
+
+The gateway is the single entry point. A client logs in once and sends the token with every request.
+
+- **Login:** `POST /auth/login` with a username and password returns a signed JWT (HS256, valid for 60 minutes). The token carries the user's `customerId` and `roles`. Demo users: `alice` and `bob` (customers) and `admin`, defined in the gateway's `application.properties`. Passwords are hashed with BCrypt and compared with BCrypt.
+- **The customer comes from the token, never from the request.** `POST /api/orders` no longer accepts a `customerId`. The Order Service reads it from the verified token, so nobody can place an order as someone else. A customer can read only their own orders (another customer's order looks like "not found"), and `GET /api/orders` lists only their own.
+- **Defence in depth.** The gateway checks the token, and the Order Service checks it again, so calling the Order Service directly does not bypass authentication.
+
+| Path | Who can call it |
+|---|---|
+| `POST /auth/login` | Anyone |
+| `/api/orders/**` | Any logged-in user (own orders only) |
+| `GET /api/products/**`, `GET /api/inventory/**` | Any logged-in user |
+| `POST /api/products`, `POST /api/inventory/**` | `ADMIN` only |
+| `/api/payments/**` | `ADMIN` only |
+| Everything else, for example `/api/reservations/**` | Not exposed |
+
+**Limitations (what a production system would add):**
+- Tokens are signed with a shared secret (`JWT_SECRET`). A real system would use an identity provider such as Keycloak, with asymmetric keys, token refresh and revocation.
+- The Inventory and Payment Services do not check tokens themselves. They are meant to run in a private network behind the gateway.
+- No rate limiting at the gateway yet.
+
+### Try it
+
+Run the gateway too: `cd api-gateway && mvn spring-boot:run`. Then use Postman or curl. Log in as the admin and as a customer:
+
+```bash
+# log in (repeat with alice / alice123 for a customer token)
+curl -X POST localhost:8080/auth/login -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}'
+# the response contains "accessToken": copy it
+
+# admin creates a product with 10 units in stock (note the returned id)
+curl -X POST localhost:8080/api/products -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin token>" \
+  -d '{"sku":"SKU-1","name":"Keyboard","price":49.99,"initialStock":10}'
+
+# alice places an order for 2 units (the customer comes from her token)
+curl -X POST localhost:8080/api/orders -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <alice token>" \
+  -d '{"items":[{"productId":"<product id>","quantity":2,"unitPrice":49.99}]}'
+```
+
+A few seconds later `GET /api/orders/<id>` (with alice's token) shows `CONFIRMED`. Things to try: a request without a token returns 401, alice creating a product returns 403, and bob reading alice's order returns 404. To see a payment failure, order with `"unitPrice":600` and `"quantity":2`. The fake gateway declines anything above 1000.
+
+## API
+
+All calls go through the gateway on port 8080 and need `Authorization: Bearer <token>`, except login.
+
+| Service | Endpoint | Purpose | Role |
+|---|---|---|---|
+| Gateway | `POST /auth/login` | Log in, returns a token | none |
+| Order | `POST /api/orders` | Place an order for the logged-in customer (starts as `PENDING`) | any user |
+| Order | `GET /api/orders/{id}` | Get one of your orders | any user (admin: any order) |
+| Order | `GET /api/orders` | List your orders | any user |
+| Inventory | `POST /api/products` | Create a product with initial stock | `ADMIN` |
+| Inventory | `GET /api/products`, `GET /api/products/{id}` | Read products | any user |
+| Inventory | `GET /api/inventory/{productId}` | Available and reserved stock | any user |
+| Inventory | `POST /api/inventory/{productId}/stock` | Add stock | `ADMIN` |
+| Payment | `GET /api/payments/{orderId}` | Payment result for an order | `ADMIN` |
+
+(The Inventory Service also has `/api/reservations/...` test endpoints. They are not reachable through the gateway; the saga calls the same code through Kafka.)
+
+## Performance load test command (now through the gateway)
+
+The load test logs in (an admin creates the products, a customer places the orders), so start the gateway first.
+
+```bash
+# Windows PowerShell or Command Prompt, from the repository root
+powershell -ExecutionPolicy Bypass -File .\load-test\benchmark.ps1 -PeakRate 15
+```
+

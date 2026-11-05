@@ -2,12 +2,10 @@ package org.example.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
-import jakarta.validation.constraints.NotNull;
 
 import java.util.List;
-import java.util.UUID;
 
+/** The customer is no longer part of the request: it is taken from the login token. */
 public record CreateOrderRequest(
-        @NotNull UUID customerId,
         @NotEmpty @Valid List<OrderItemRequest> items) {
 }

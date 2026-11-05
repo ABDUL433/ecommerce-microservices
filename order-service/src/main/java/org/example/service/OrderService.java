@@ -49,10 +49,11 @@ public class OrderService {
     /**
      * Saves the order as PENDING and an OrderCreated outbox row in the SAME transaction,
      * so an order can never exist without its event (and the other way round).
+     * The customer comes from the login token, never from the request body.
      */
     @Transactional
-    public OrderResponse createOrder(CreateOrderRequest request) {
-        Order order = new Order(request.customerId());
+    public OrderResponse createOrder(UUID customerId, CreateOrderRequest request) {
+        Order order = new Order(customerId);
         for (OrderItemRequest item : request.items()) {
             order.addItem(item.productId(), item.quantity(), item.unitPrice());
         }
@@ -105,9 +106,14 @@ public class OrderService {
         }
     }
 
+    /** Only the owner (or an admin) can read an order. Anyone else gets "not found", so ids are not revealed. */
     @Transactional(readOnly = true)
-    public OrderResponse getOrder(UUID id) {
-        return OrderResponse.from(findOrder(id));
+    public OrderResponse getOrder(UUID id, UUID callerCustomerId, boolean admin) {
+        Order order = findOrder(id);
+        if (!admin && !order.getCustomerId().equals(callerCustomerId)) {
+            throw new ResourceNotFoundException("Order not found: " + id);
+        }
+        return OrderResponse.from(order);
     }
 
     @Transactional(readOnly = true)
